@@ -26,7 +26,7 @@ use {
       ord::{self, redb::try_init_tables as try_init_ord, DataStoreReadOnly},
       ScriptKey,
     },
-    protocol::brc20s::params::NATIVE_TOKEN_DECIMAL,
+    protocol::brc20s::{get_config_by_network, params::NATIVE_TOKEN_DECIMAL},
     reward,
   },
   redb::{
@@ -1594,12 +1594,14 @@ impl Index {
     };
 
     let block = self.height().unwrap().unwrap_or(Height(0)).n();
+    let version = get_config_by_network(address.network, block);
 
     let result = reward::query_reward(
       user_info,
       pool_info,
-      self.height().unwrap().unwrap_or(Height(0)).n(),
+      block,
       dec,
+      version.pool_acc_reward_per_share_scale,
     )?;
 
     Ok((Some(result.to_string()), Some(block.to_string())))

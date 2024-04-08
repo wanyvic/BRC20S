@@ -114,6 +114,10 @@ impl Num {
       })
   }
 
+  pub fn with_scale(&self, scale: i64) -> Self {
+    Self(self.0.with_scale(scale).normalized())
+  }
+
   pub fn truncate_to_str(&self) -> Result<String, BRC20SError> {
     let big_str = self.0.clone().to_string();
     let parts: Vec<&str> = big_str.split('.').collect();
@@ -620,5 +624,24 @@ mod tests {
     let amt = num.checked_mul(&base).unwrap();
     let is_integer = amt.is_positive();
     println!("checked_mul {:?}, {}", amt, is_integer);
+  }
+
+  #[test]
+  fn test_with_scale() {
+    let n = Num::from_str("1.23456789").unwrap();
+    assert_eq!(n.with_scale(0), Num::from_str("1").unwrap());
+    assert_eq!(n.with_scale(1), Num::from_str("1.2").unwrap());
+    assert_eq!(n.with_scale(2), Num::from_str("1.23").unwrap());
+    assert_eq!(n.with_scale(3), Num::from_str("1.234").unwrap());
+    assert_eq!(n.with_scale(4), Num::from_str("1.2345").unwrap());
+    assert_eq!(n.with_scale(5), Num::from_str("1.23456").unwrap());
+    assert_eq!(n.with_scale(6), Num::from_str("1.234567").unwrap());
+    assert_eq!(n.with_scale(7), Num::from_str("1.2345678").unwrap());
+    assert_eq!(n.with_scale(8), Num::from_str("1.23456789").unwrap());
+    assert_eq!(n.with_scale(9), Num::from_str("1.23456789").unwrap());
+    let n = Num::from_str("1.20").unwrap();
+    assert_eq!(n.with_scale(0), Num::from_str("1").unwrap());
+    assert_eq!(n.with_scale(1), Num::from_str("1.2").unwrap());
+    assert_eq!(n.with_scale(2), Num::from_str("1.2").unwrap());
   }
 }

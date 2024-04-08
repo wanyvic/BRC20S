@@ -20,10 +20,16 @@ pub fn query_reward(
   pool: PoolInfo,
   block_num: u64,
   staked_decimal: u8,
+  acc_reward_per_share_scale: Option<u8>,
 ) -> Result<u128, BRC20SError> {
   let mut user_temp = user;
   let mut pool_temp = pool;
-  update_pool(&mut pool_temp, block_num, staked_decimal)?;
+  update_pool(
+    &mut pool_temp,
+    block_num,
+    staked_decimal,
+    acc_reward_per_share_scale,
+  )?;
   withdraw_user_reward(&mut user_temp, &pool_temp, staked_decimal)
 }
 
@@ -32,6 +38,7 @@ pub fn update_pool(
   pool: &mut PoolInfo,
   block_num: u64,
   staked_decimal: u8,
+  acc_reward_per_share_scale: Option<u8>,
 ) -> Result<(), BRC20SError> {
   if pool.ptype != PoolType::Pool && pool.ptype != PoolType::Fixed {
     return Err(BRC20SError::UnknownPoolType);
@@ -70,11 +77,18 @@ pub fn update_pool(
     pool.minted = pool_minted.checked_add(&rewards)?.truncate_to_u128()?;
 
     // calculating accRewardPerShare
-    pool.acc_reward_per_share = rewards
+    if let Some(scale) = acc_reward_per_share_scale {
+      pool.acc_reward_per_share = rewards
+      .checked_mul(&get_per_share_multiplier())?
+      .checked_div(&pool_stake)? // pool's per share = reward / all stake
+      .checked_add(&acc_reward_per_share)?.with_scale(scale.into()).to_string();
+    } else {
+      pool.acc_reward_per_share = rewards
       .checked_mul(&get_per_share_multiplier())?
       .checked_div(&pool_stake)? // pool's per share = reward / all stake
       .checked_add(&acc_reward_per_share)?
       .truncate_to_str()?;
+    }
   } else if pool.ptype == PoolType::Fixed {
     let mut estimate_reward = pool_stake
       .checked_mul(&rewards)?
@@ -101,10 +115,18 @@ pub fn update_pool(
       .truncate_to_u128()?;
 
     // calculating accRewardPerShare
-    pool.acc_reward_per_share = rewards
-      .checked_mul(&get_per_share_multiplier())?
-      .checked_add(&acc_reward_per_share)?
-      .truncate_to_str()?;
+    if let Some(scale) = acc_reward_per_share_scale {
+      pool.acc_reward_per_share = rewards
+        .checked_mul(&get_per_share_multiplier())?
+        .checked_add(&acc_reward_per_share)?
+        .with_scale(scale.into())
+        .to_string();
+    } else {
+      pool.acc_reward_per_share = rewards
+        .checked_mul(&get_per_share_multiplier())?
+        .checked_add(&acc_reward_per_share)?
+        .truncate_to_str()?;
+    }
   }
 
   pool.last_update_block = block_num;
@@ -244,7 +266,7 @@ mod tests {
 
     //stake, no reward
     {
-      assert_eq!(update_pool(&mut pool, 1, STAKED_DECIMAL), Ok(()));
+      assert_eq!(update_pool(&mut pool, 1, STAKED_DECIMAL, None), Ok(()));
       assert_eq!(
         withdraw_user_reward(&mut user, &pool, STAKED_DECIMAL).expect_err(""),
         BRC20SError::NoStaked("bca1dabca1d#1".to_string())
@@ -256,7 +278,7 @@ mod tests {
 
     //withdraw, has reward
     {
-      assert_eq!(update_pool(&mut pool, 2, STAKED_DECIMAL), Ok(()));
+      assert_eq!(update_pool(&mut pool, 2, STAKED_DECIMAL, None), Ok(()));
       assert_eq!(
         withdraw_user_reward(&mut user, &pool, STAKED_DECIMAL).unwrap(),
         2 * erate_base
@@ -269,7 +291,7 @@ mod tests {
     // query reward
     {
       assert_eq!(
-        query_reward(user, pool, 100, STAKED_DECIMAL).unwrap(),
+        query_reward(user, pool, 100, STAKED_DECIMAL, None).unwrap(),
         98 * erate_base
       );
     }
@@ -1335,7 +1357,7 @@ mod tests {
     let mut user = new_user(&pid);
 
     assert_eq!(
-      update_pool(&mut pool, 1, STAKED_DECIMAL),
+      update_pool(&mut pool, 1, STAKED_DECIMAL, None),
       Err(BRC20SError::UnknownPoolType)
     );
 
@@ -1366,11 +1388,11 @@ mod tests {
     pool.last_update_block = 123;
     pool.last_update_block = 123;
 
-    assert_eq!(update_pool(&mut pool, 1, STAKED_DECIMAL), Ok(()));
+    assert_eq!(update_pool(&mut pool, 1, STAKED_DECIMAL, None), Ok(()));
     assert_eq!(pool.last_update_block, 123);
     assert_eq!(pool.acc_reward_per_share, "123".to_string());
 
-    assert_eq!(update_pool(&mut pool, 125, STAKED_DECIMAL), Ok(()));
+    assert_eq!(update_pool(&mut pool, 125, STAKED_DECIMAL, None), Ok(()));
     assert_eq!(pool.last_update_block, 125);
     assert_eq!(pool.acc_reward_per_share, "123".to_string());
   }
@@ -1390,11 +1412,11 @@ mod tests {
     pool.acc_reward_per_share = "123".to_string();
     pool.last_update_block = 123;
 
-    assert_eq!(update_pool(&mut pool, 1, STAKED_DECIMAL), Ok(()));
+    assert_eq!(update_pool(&mut pool, 1, STAKED_DECIMAL, None), Ok(()));
     assert_eq!(pool.last_update_block, 123);
     assert_eq!(pool.acc_reward_per_share, "123".to_string());
 
-    assert_eq!(update_pool(&mut pool, 100, STAKED_DECIMAL), Ok(()));
+    assert_eq!(update_pool(&mut pool, 100, STAKED_DECIMAL, None), Ok(()));
     assert_eq!(pool.last_update_block, 123);
     assert_eq!(pool.acc_reward_per_share, "123".to_string());
   }
@@ -1725,7 +1747,7 @@ mod tests {
     pool.acc_reward_per_share = "100".to_string();
     pool.last_update_block = 1;
 
-    assert_eq!(update_pool(&mut pool, 100, STAKED_DECIMAL), Ok(()));
+    assert_eq!(update_pool(&mut pool, 100, STAKED_DECIMAL, None), Ok(()));
 
     assert_eq!(
       withdraw_user_reward(&mut user, &pool, STAKED_DECIMAL),
@@ -1909,7 +1931,7 @@ mod tests {
     let mut user3 = new_user(&pid);
 
     assert_eq!(
-      query_reward(user1.clone(), pool.clone(), 101, STAKED_DECIMAL).unwrap_err(),
+      query_reward(user1.clone(), pool.clone(), 101, STAKED_DECIMAL, None).unwrap_err(),
       BRC20SError::NoStaked(pid.as_str().to_string(),)
     );
     do_one_case(
@@ -1928,7 +1950,7 @@ mod tests {
     );
 
     assert_eq!(
-      query_reward(user2.clone(), pool.clone(), 101, STAKED_DECIMAL).unwrap_err(),
+      query_reward(user2.clone(), pool.clone(), 101, STAKED_DECIMAL, None).unwrap_err(),
       BRC20SError::NoStaked(pid.as_str().to_string(),)
     );
     do_one_case(
@@ -1947,7 +1969,7 @@ mod tests {
     );
 
     assert_eq!(
-      query_reward(user3.clone(), pool.clone(), 101, STAKED_DECIMAL).unwrap_err(),
+      query_reward(user3.clone(), pool.clone(), 101, STAKED_DECIMAL, None).unwrap_err(),
       BRC20SError::NoStaked(pid.as_str().to_string(),)
     );
     do_one_case(
@@ -1966,7 +1988,7 @@ mod tests {
     );
 
     assert_eq!(
-      query_reward(user1.clone(), pool.clone(), 200, STAKED_DECIMAL).unwrap(),
+      query_reward(user1.clone(), pool.clone(), 200, STAKED_DECIMAL, None).unwrap(),
       165 * stake_base,
     );
     do_one_case(
@@ -1985,7 +2007,7 @@ mod tests {
     );
 
     assert_eq!(
-      query_reward(user2.clone(), pool.clone(), 1100, STAKED_DECIMAL).unwrap(),
+      query_reward(user2.clone(), pool.clone(), 1100, STAKED_DECIMAL, None).unwrap(),
       3330 * stake_base
     );
     do_one_case(
@@ -2004,7 +2026,7 @@ mod tests {
     );
 
     assert_eq!(
-      query_reward(user3.clone(), pool.clone(), 1101, STAKED_DECIMAL).unwrap(),
+      query_reward(user3.clone(), pool.clone(), 1101, STAKED_DECIMAL, None).unwrap(),
       4999999
     );
     do_one_case(
@@ -2023,7 +2045,7 @@ mod tests {
     );
 
     assert_eq!(
-      query_reward(user1.clone(), pool.clone(), 2101, STAKED_DECIMAL).unwrap(),
+      query_reward(user1.clone(), pool.clone(), 2101, STAKED_DECIMAL, None).unwrap(),
       1501666
     );
     do_one_case(
@@ -2042,7 +2064,7 @@ mod tests {
     );
 
     assert_eq!(
-      query_reward(user2.clone(), pool.clone(), 2101, STAKED_DECIMAL).unwrap(),
+      query_reward(user2.clone(), pool.clone(), 2101, STAKED_DECIMAL, None).unwrap(),
       3333
     );
     do_one_case(
@@ -2061,7 +2083,7 @@ mod tests {
     );
 
     assert_eq!(
-      query_reward(user3.clone(), pool.clone(), 2101, STAKED_DECIMAL).unwrap(),
+      query_reward(user3.clone(), pool.clone(), 2101, STAKED_DECIMAL, None).unwrap(),
       0
     );
     do_one_case(
@@ -2094,6 +2116,7 @@ mod tests {
 
   #[test]
   fn test_precision_18_18_block10() {
+    let acc_reward_per_share_scale = None;
     //Fix
     do_one_precision(
       PoolType::Fixed,
@@ -2105,6 +2128,7 @@ mod tests {
       to_num("10000.0"),
       "1000000000000000000000",
       "2000000000000000000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2116,6 +2140,7 @@ mod tests {
       to_num("10000.0"),
       "100",
       "2000000000000000000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2127,6 +2152,7 @@ mod tests {
       to_num("10000.0"),
       "10",
       "200000000000000000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2138,6 +2164,7 @@ mod tests {
       to_num("10000.0"),
       "1",
       "20000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2150,6 +2177,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "2000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2162,6 +2190,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "200",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2174,6 +2203,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "20",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2186,6 +2216,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "2",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2198,6 +2229,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "0",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2210,6 +2242,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "1000000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2222,6 +2255,7 @@ mod tests {
       to_num("10000.0"),
       "10",
       "1000000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2234,6 +2268,7 @@ mod tests {
       to_num("10000000000.0"),
       "10",
       "1000000000000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2246,6 +2281,7 @@ mod tests {
       to_num("10000.0"),
       "33333333333333333330",
       "66666666666666666660",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2257,6 +2293,7 @@ mod tests {
       to_num("10000.0"),
       "4",
       "99999999999999999980",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2268,6 +2305,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9999999999999999980",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2279,6 +2317,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "999999999999999980",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2291,6 +2330,7 @@ mod tests {
       to_num("10000.0"),
       "49999",
       "99999999999950000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2303,6 +2343,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "0",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2315,6 +2356,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "8",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2327,6 +2369,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2339,6 +2382,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2351,6 +2395,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9999900000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2363,6 +2408,7 @@ mod tests {
       to_num("10000.0"),
       "9",
       "9999900000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2375,11 +2421,13 @@ mod tests {
       to_num("10000.0"),
       "9",
       "9999999999900000000",
+      acc_reward_per_share_scale,
     );
   }
 
   #[test]
   fn test_precision_3_6_block10() {
+    let acc_reward_per_share_scale = None;
     //Fix
     do_one_precision(
       PoolType::Fixed,
@@ -2391,6 +2439,7 @@ mod tests {
       to_num("10000.0"),
       "1000000000",
       "2000000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2402,6 +2451,7 @@ mod tests {
       to_num("10000.0"),
       "100000",
       "2000000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2413,6 +2463,7 @@ mod tests {
       to_num("10000.0"),
       "10000",
       "200000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2424,6 +2475,7 @@ mod tests {
       to_num("10000.0"),
       "1000",
       "20000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2436,6 +2488,7 @@ mod tests {
       to_num("10000.0"),
       "100",
       "2000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2448,6 +2501,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "200",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2460,6 +2514,7 @@ mod tests {
       to_num("10000.0"),
       "10",
       "20000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2472,6 +2527,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "2",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2484,6 +2540,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "0",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2496,6 +2553,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "1000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2508,6 +2566,7 @@ mod tests {
       to_num("10000.0"),
       "10",
       "1000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2520,6 +2579,7 @@ mod tests {
       to_num("10000000000.0"),
       "99999999",
       "9999999900000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2532,6 +2592,7 @@ mod tests {
       to_num("10000.0"),
       "33333333",
       "66666666",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2543,6 +2604,7 @@ mod tests {
       to_num("10000.0"),
       "4999",
       "99995000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2554,6 +2616,7 @@ mod tests {
       to_num("10000.0"),
       "499",
       "9999500",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2565,6 +2628,7 @@ mod tests {
       to_num("10000.0"),
       "49",
       "999950",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2577,6 +2641,7 @@ mod tests {
       to_num("10000.0"),
       "4",
       "99995",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2589,6 +2654,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9999",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2601,6 +2667,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2613,6 +2680,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2625,6 +2693,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2637,6 +2706,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2649,6 +2719,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2661,6 +2732,7 @@ mod tests {
       to_num("10000.0"),
       "9",
       "9990",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2673,11 +2745,13 @@ mod tests {
       to_num("10000.0"),
       "9",
       "9999990",
+      acc_reward_per_share_scale,
     );
   }
 
   #[test]
   fn test_precision_18_3_block10() {
+    let acc_reward_per_share_scale = None;
     //Fix
     do_one_precision(
       PoolType::Fixed,
@@ -2689,6 +2763,7 @@ mod tests {
       to_num("10000.0"),
       "1000000",
       "2000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2700,6 +2775,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "2000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2711,6 +2787,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "200000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2722,6 +2799,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "20000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2734,6 +2812,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "2000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2746,6 +2825,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "200",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2758,6 +2838,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "20",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2770,6 +2851,7 @@ mod tests {
       to_num("100000000000.0"),
       "0",
       "2",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2782,6 +2864,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "0",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2794,6 +2877,7 @@ mod tests {
       to_num("100000000000.0"),
       "0",
       "1000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2806,6 +2890,7 @@ mod tests {
       to_num("100000000000.0"),
       "10",
       "1000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2818,6 +2903,7 @@ mod tests {
       to_num("100000000000.0"),
       "100000",
       "10000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2830,6 +2916,7 @@ mod tests {
       to_num("10000.0"),
       "33330",
       "66660",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2841,6 +2928,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "99980",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2852,6 +2940,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9980",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -2863,6 +2952,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "980",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2875,6 +2965,7 @@ mod tests {
       to_num("80.0"),
       "0",
       "80",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2887,6 +2978,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "8",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2899,6 +2991,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2911,6 +3004,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2923,6 +3017,7 @@ mod tests {
       to_num("10000000000000000.0"),
       "0",
       "0",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2935,6 +3030,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "0",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -2947,11 +3043,13 @@ mod tests {
       to_num("10000.0"),
       "0",
       "0",
+      acc_reward_per_share_scale,
     );
   }
 
   #[test]
   fn test_precision_3_18_block10() {
+    let acc_reward_per_share_scale = None;
     //Fix
     do_one_precision(
       PoolType::Fixed,
@@ -2963,6 +3061,7 @@ mod tests {
       to_num("10000.0"),
       "1000000000000000000000",
       "2000000000000000000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2974,6 +3073,7 @@ mod tests {
       to_num("10000.0"),
       "100000000000000000",
       "2000000000000000000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2985,6 +3085,7 @@ mod tests {
       to_num("10000.0"),
       "10000000000000000",
       "200000000000000000000",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Fixed,
@@ -2996,6 +3097,7 @@ mod tests {
       to_num("10000.0"),
       "1000000000000000",
       "20000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3008,6 +3110,7 @@ mod tests {
       to_num("10000.0"),
       "100000000000000",
       "2000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3020,6 +3123,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "200",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3032,6 +3136,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "20",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3044,6 +3149,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "2",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3056,6 +3162,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "0",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3068,6 +3175,7 @@ mod tests {
       to_num("10000.0"),
       "10000000000",
       "1000000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3080,6 +3188,7 @@ mod tests {
       to_num("10000.0"),
       "100000000000",
       "1000000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3092,6 +3201,7 @@ mod tests {
       to_num("10000000000.0"),
       "10000000000000000",
       "1000000000000000000000000000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3104,6 +3214,7 @@ mod tests {
       to_num("10000.0"),
       "33333333333333333333",
       "66666666666666666666",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -3115,6 +3226,7 @@ mod tests {
       to_num("10000.0"),
       "4999750012499375",
       "99995000249987500624",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -3126,6 +3238,7 @@ mod tests {
       to_num("10000.0"),
       "499975001249937",
       "9999500024998750062",
+      acc_reward_per_share_scale,
     );
     do_one_precision(
       PoolType::Pool,
@@ -3137,6 +3250,7 @@ mod tests {
       to_num("10000.0"),
       "49997500124993",
       "999950002499875006",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3149,6 +3263,7 @@ mod tests {
       to_num("10000.0"),
       "49975012493753",
       "99950024987506246",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3161,6 +3276,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3173,6 +3289,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3185,6 +3302,7 @@ mod tests {
       to_num("10000.0"),
       "0",
       "9",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3197,6 +3315,7 @@ mod tests {
       to_num("10000.0"),
       "3",
       "6",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3209,6 +3328,7 @@ mod tests {
       to_num("10000.0"),
       "99",
       "9999999999900",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3221,6 +3341,7 @@ mod tests {
       to_num("10000.0"),
       "999",
       "9999999999000",
+      acc_reward_per_share_scale,
     );
 
     do_one_precision(
@@ -3233,6 +3354,1251 @@ mod tests {
       to_num("10000.0"),
       "999999999",
       "9999999999000000000",
+      acc_reward_per_share_scale,
+    );
+  }
+
+  #[test]
+  fn test_precision_18_18_block10_shark() {
+    let acc_reward_per_share_scale = Some(18);
+    //Fix
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("10.0"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "1000000000000000000000",
+      "2000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "100",
+      "2000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("1.0"),
+      to_num("10000.0"),
+      "10",
+      "200000000000000000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("0.1"),
+      to_num("10000.0"),
+      "1",
+      "20000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("0.01"),
+      to_num("10000.0"),
+      "0",
+      "2000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "200",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("2.0"),
+      18,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "20",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("0.2"),
+      18,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "2",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("0.02"),
+      18,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "0",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("100000000.0"),
+      18,
+      18,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "1000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000001"),
+      to_num("100000000.0"),
+      18,
+      18,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "10",
+      "1000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("100000000.0"),
+      18,
+      18,
+      to_num("1"),
+      to_num("10000000000.0"),
+      "10",
+      "1000000000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("10.0"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "33333333333333333333",
+      "66666666666666666666",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "4",
+      "99999999999999999995",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("1.0"),
+      to_num("10000.0"),
+      "0",
+      "9999999999999999999",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("0.1"),
+      to_num("10000.0"),
+      "0",
+      "999999999999999999",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.00000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("0.01"),
+      to_num("10000.0"),
+      "49999",
+      "99999999999950000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.00000000001"),
+      to_num("20.0"),
+      18,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.00000000001"),
+      to_num("2.0"),
+      18,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.00000000001"),
+      to_num("0.2"),
+      18,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("0.02"),
+      18,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("100000000.0"),
+      18,
+      18,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "9999999999999",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.0001"),
+      to_num("100000000.0"),
+      18,
+      18,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "9",
+      "9999999999990",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.0000000001"),
+      to_num("100000000.0"),
+      18,
+      18,
+      to_num("1"),
+      to_num("10000.0"),
+      "9",
+      "9999999999999999990",
+      acc_reward_per_share_scale,
+    );
+  }
+
+  #[test]
+  fn test_precision_3_6_block10_shark() {
+    let acc_reward_per_share_scale = Some(18);
+    //Fix
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("10.0"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "1000000000",
+      "2000000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "100000",
+      "2000000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("1.0"),
+      to_num("10000.0"),
+      "10000",
+      "200000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("0.1"),
+      to_num("10000.0"),
+      "1000",
+      "20000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("0.01"),
+      to_num("10000.0"),
+      "100",
+      "2000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "200",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("2.0"),
+      3,
+      6,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "10",
+      "20000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("0.2"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "2",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("0.02"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "0",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("100000000.0"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "1000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("1"),
+      to_num("100000000.0"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "10",
+      "1000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("1"),
+      to_num("100000000.0"),
+      3,
+      6,
+      to_num("10"),
+      to_num("10000000000.0"),
+      "99999999",
+      "9999999900000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("10.0"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "33333333",
+      "66666666",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "4999",
+      "99995000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("1.0"),
+      to_num("10000.0"),
+      "499",
+      "9999500",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("0.1"),
+      to_num("10000.0"),
+      "49",
+      "999950",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("0.01"),
+      to_num("10000.0"),
+      "4",
+      "99995",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "0",
+      "9999",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("2.0"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("0.2"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("0.02"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("100000000.0"),
+      3,
+      6,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("100000"),
+      to_num("100000000.0"),
+      3,
+      6,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "9",
+      "9990",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("100"),
+      to_num("100000000.0"),
+      3,
+      6,
+      to_num("1"),
+      to_num("10000.0"),
+      "9",
+      "9999990",
+      acc_reward_per_share_scale,
+    );
+  }
+
+  #[test]
+  fn test_precision_18_3_block10_shark() {
+    let acc_reward_per_share_scale = Some(18);
+    //Fix
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("10.0"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "1000000",
+      "2000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "0",
+      "2000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("1.0"),
+      to_num("10000.0"),
+      "0",
+      "200000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("0.1"),
+      to_num("10000.0"),
+      "0",
+      "20000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("0.01"),
+      to_num("10000.0"),
+      "0",
+      "2000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "0",
+      "200",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("2.0"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "0",
+      "20",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("0.2"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("100000000000.0"),
+      "0",
+      "2",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("0.02"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "0",
+      "0",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.000000000000000001"),
+      to_num("100000000.0"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("100000000000.0"),
+      "0",
+      "1000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("1"),
+      to_num("100000000.0"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("100000000000.0"),
+      "10",
+      "1000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("1"),
+      to_num("100000000.0"),
+      18,
+      3,
+      to_num("10"),
+      to_num("100000000000.0"),
+      "100000",
+      "10000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("10.0"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "33333",
+      "66666",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "0",
+      "99999",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("1.0"),
+      to_num("10000.0"),
+      "0",
+      "9999",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("0.1"),
+      to_num("10000.0"),
+      "0",
+      "999",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.00000000001"),
+      to_num("20.0"),
+      18,
+      3,
+      to_num("0.01"),
+      to_num("80.0"),
+      "0",
+      "99",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.00000000001"),
+      to_num("2.0"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.00000000001"),
+      to_num("0.2"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.000000000000000001"),
+      to_num("0.02"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("1"),
+      to_num("10.0"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("10000000000000000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("100000000"),
+      to_num("100000000"),
+      18,
+      3,
+      to_num("0.001"),
+      to_num("10000.0"),
+      "5",
+      "5",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("100000"),
+      to_num("100000000.0"),
+      18,
+      3,
+      to_num("1"),
+      to_num("10000.0"),
+      "9",
+      "9990",
+      acc_reward_per_share_scale,
+    );
+  }
+
+  #[test]
+  fn test_precision_3_18_block10_shark() {
+    let acc_reward_per_share_scale = Some(18);
+    //Fix
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("10.0"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "1000000000000000000000",
+      "2000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "100000000000000000",
+      "2000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("1.0"),
+      to_num("10000.0"),
+      "10000000000000000",
+      "200000000000000000000",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("0.1"),
+      to_num("10000.0"),
+      "1000000000000000",
+      "20000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("0.01"),
+      to_num("10000.0"),
+      "100000000000000",
+      "2000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "200",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("2.0"),
+      3,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "20",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("0.2"),
+      3,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "2",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("0.02"),
+      3,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "0",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("100000000.0"),
+      3,
+      18,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "10000000000",
+      "1000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.01"),
+      to_num("100000000.0"),
+      3,
+      18,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "100000000000",
+      "1000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Fixed,
+      to_num("0.001"),
+      to_num("100000000.0"),
+      3,
+      18,
+      to_num("1"),
+      to_num("10000000000.0"),
+      "10000000000000000",
+      "1000000000000000000000000000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("10.0"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "33333333333333333333",
+      "66666666666666666666",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("10.0"),
+      to_num("10000.0"),
+      "4999750012499375",
+      "99995000249987500624",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("1.0"),
+      to_num("10000.0"),
+      "499975001249937",
+      "9999500024998750062",
+      acc_reward_per_share_scale,
+    );
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("0.1"),
+      to_num("10000.0"),
+      "49997500124993",
+      "999950002499875006",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.01"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("0.01"),
+      to_num("10000.0"),
+      "49975012493753",
+      "99950024987506246",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.01"),
+      to_num("20.0"),
+      3,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.01"),
+      to_num("2.0"),
+      3,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.01"),
+      to_num("0.2"),
+      3,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "0",
+      "9",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.01"),
+      to_num("0.02"),
+      3,
+      18,
+      to_num("0.000000000000000001"),
+      to_num("10000.0"),
+      "3",
+      "6",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.001"),
+      to_num("100000000.0"),
+      3,
+      18,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "99",
+      "9999999999900",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.01"),
+      to_num("100000000.0"),
+      3,
+      18,
+      to_num("0.000001"),
+      to_num("10000.0"),
+      "999",
+      "9999999999000",
+      acc_reward_per_share_scale,
+    );
+
+    do_one_precision(
+      PoolType::Pool,
+      to_num("0.01"),
+      to_num("100000000.0"),
+      3,
+      18,
+      to_num("1"),
+      to_num("10000.0"),
+      "999999999",
+      "9999999999000000000",
+      acc_reward_per_share_scale,
     );
   }
 
@@ -3498,6 +4864,7 @@ mod tests {
     dmax: Num,
     expect1: &str,
     expect2: &str,
+    acc_reward_per_share_scale: Option<u8>,
   ) {
     let stake_base = Num::from(get_base_decimal(staked_decimal));
     let erate_base = Num::from(get_base_decimal(earte_decimal));
@@ -3515,7 +4882,7 @@ mod tests {
     let mut user2 = new_user(&pid);
 
     //first
-    let _ = update_pool(&mut pool, 1, staked_decimal);
+    let _ = update_pool(&mut pool, 1, staked_decimal, acc_reward_per_share_scale);
     let _ = withdraw_user_reward(&mut user1, &pool, staked_decimal);
     user1.staked += stake_base
       .checked_mul(&stake1)
@@ -3530,7 +4897,7 @@ mod tests {
     let _ = withdraw_user_reward(&mut user1, &pool, staked_decimal);
     let _ = update_user_stake(&mut user1, &pool, staked_decimal);
 
-    let _ = update_pool(&mut pool, 1, staked_decimal);
+    let _ = update_pool(&mut pool, 1, staked_decimal, acc_reward_per_share_scale);
     let _ = withdraw_user_reward(&mut user2, &pool, staked_decimal);
     user2.staked += stake_base
       .checked_mul(&stake2)
@@ -3546,7 +4913,7 @@ mod tests {
     let _ = update_user_stake(&mut user2, &pool, staked_decimal);
 
     //second
-    let _ = update_pool(&mut pool, 11, staked_decimal);
+    let _ = update_pool(&mut pool, 11, staked_decimal, acc_reward_per_share_scale);
     let reward1 = withdraw_user_reward(&mut user1, &pool, staked_decimal).unwrap();
     let reward2 = withdraw_user_reward(&mut user2, &pool, staked_decimal).unwrap();
     assert_eq!(
@@ -3573,7 +4940,7 @@ mod tests {
     expect_update_stake_result: Result<(), BRC20SError>,
     staked_decimal: u8,
   ) {
-    assert_eq!(update_pool(pool, block_mum, staked_decimal), Ok(()));
+    assert_eq!(update_pool(pool, block_mum, staked_decimal, None), Ok(()));
 
     let result = withdraw_user_reward(user, pool, staked_decimal);
     match result {

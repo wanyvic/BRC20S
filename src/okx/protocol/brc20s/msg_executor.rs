@@ -512,7 +512,12 @@ fn process_stake<'a, M: brc20::DataStoreReadWrite, N: brc20s::DataStoreReadWrite
   }
 
   let dec = get_stake_dec(&stake_tick, brc20s_store, brc20_store);
-  reward::update_pool(&mut pool, context.blockheight, dec)?;
+  reward::update_pool(
+    &mut pool,
+    context.blockheight,
+    dec,
+    config.pool_acc_reward_per_share_scale,
+  )?;
   let mut reward = 0_u128;
   if !is_first_stake {
     reward = reward::withdraw_user_reward(&mut userinfo, &pool, dec)?;
@@ -570,7 +575,7 @@ fn process_stake<'a, M: brc20::DataStoreReadWrite, N: brc20s::DataStoreReadWrite
 
 fn process_unstake<'a, M: brc20::DataStoreReadWrite, N: brc20s::DataStoreReadWrite>(
   context: BlockContext,
-  _config: version::Config,
+  config: version::Config,
   brc20_store: &'a M,
   brc20s_store: &'a N,
   msg: &ExecutionMessage,
@@ -626,7 +631,12 @@ fn process_unstake<'a, M: brc20::DataStoreReadWrite, N: brc20s::DataStoreReadWri
   }
 
   let dec = get_stake_dec(&stake_tick, brc20s_store, brc20_store);
-  reward::update_pool(&mut pool, context.blockheight, dec)?;
+  reward::update_pool(
+    &mut pool,
+    context.blockheight,
+    dec,
+    config.pool_acc_reward_per_share_scale,
+  )?;
   let reward = reward::withdraw_user_reward(&mut userinfo, &pool, dec)?;
   userinfo.staked = has_staked.checked_sub(&amount)?.checked_to_u128()?;
   pool.staked = Num::from(pool.staked)
@@ -750,7 +760,7 @@ fn process_passive_unstake<'a, M: brc20::DataStoreReadWrite, N: brc20s::DataStor
 }
 fn process_mint<'a, M: brc20::DataStoreReadWrite, N: brc20s::DataStoreReadWrite>(
   context: BlockContext,
-  _config: version::Config,
+  config: version::Config,
   brc20_store: &'a M,
   brc20s_store: &'a N,
   msg: &ExecutionMessage,
@@ -817,7 +827,12 @@ fn process_mint<'a, M: brc20::DataStoreReadWrite, N: brc20s::DataStoreReadWrite>
     user_info.pending_reward -= amt.checked_to_u128()?;
     user_info.minted += amt.checked_to_u128()?;
   } else {
-    reward::update_pool(&mut pool_info, context.blockheight, dec)?;
+    reward::update_pool(
+      &mut pool_info,
+      context.blockheight,
+      dec,
+      config.pool_acc_reward_per_share_scale,
+    )?;
     reward::withdraw_user_reward(&mut user_info, &pool_info, dec)?;
     reward::update_user_stake(&mut user_info, &pool_info, dec)?;
     if amt > user_info.pending_reward.into() {

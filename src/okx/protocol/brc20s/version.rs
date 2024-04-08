@@ -8,6 +8,7 @@ pub struct Config {
   pub allow_brc20_staking: bool,
   pub allow_brc20s_staking: bool,
   pub max_staked_pool_num: u64,
+  pub pool_acc_reward_per_share_scale: Option<u8>,
 }
 
 // start at block 798108
@@ -18,6 +19,7 @@ pub const fn zebra() -> Config {
     allow_brc20_staking: true,
     allow_brc20s_staking: false,
     max_staked_pool_num: 5,
+    pool_acc_reward_per_share_scale: None,
   }
 }
 // start at block 800310
@@ -28,20 +30,36 @@ pub const fn koala() -> Config {
     allow_brc20_staking: true,
     allow_brc20s_staking: false,
     max_staked_pool_num: 128,
+    pool_acc_reward_per_share_scale: None,
+  }
+}
+
+// start at block 838300
+pub const fn shark() -> Config {
+  Config {
+    allow_share_pool: true,
+    allow_btc_staking: false,
+    allow_brc20_staking: true,
+    allow_brc20s_staking: false,
+    max_staked_pool_num: 128,
+    pool_acc_reward_per_share_scale: Some(18),
   }
 }
 
 pub fn get_config_by_network(network: Network, blockheight: u64) -> Config {
   match network {
     Network::Bitcoin => match blockheight {
+      n if n >= 838275 => shark(),
       n if n >= 800310 => koala(),
       _ => zebra(),
     },
     Network::Testnet => match blockheight {
+      n if n >= 2585500 => shark(),
       n if n >= 2468142 => koala(),
       _ => zebra(),
     },
     Network::Signet => match blockheight {
+      n if n >= 190300 => shark(),
       n if n >= 153382 => koala(),
       _ => zebra(),
     },
